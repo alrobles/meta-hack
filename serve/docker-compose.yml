@@ -1,0 +1,30 @@
+name: wildseek
+
+# EcoSeek WildSeek — HPAI wildlife susceptibility + sub-county supply risk
+#
+# Usage:
+#   docker compose up -d --build
+#   http://localhost:8654
+#
+# Public access via Cloudflare Tunnel (wildseek.ecoseek.org -> 127.0.0.1:8654)
+
+services:
+  wildseek:
+    build:
+      context: ..
+      dockerfile: serve/Dockerfile
+    container_name: ecoseek-wildseek
+    ports:
+      - "127.0.0.1:8654:8654"
+    volumes:
+      # whole frontend dir from host (index.html + data overlay)
+      - ../app:/app/frontend:ro
+    environment:
+      DATA_DIR: "/app/frontend/data"
+      STATIC_DIR: "/app/frontend"
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8654/health').read()"]
+      interval: 30s
+      timeout: 5s

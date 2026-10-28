@@ -1,0 +1,9 @@
+# Floors verified with repo test suite (2026-10-27, 37 passed).
+# Lower bounds, not == : prod image builds from these without forced
+# downgrades. Bump only after running pytest green.
+fastapi>=0.162
+uvicorn>=0.54
+duckdb>=2.0
+pandas>=3.1
+httpx>=0.28
+requests>=2.34

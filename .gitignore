@@ -1,0 +1,25 @@
+# secrets
+.env
+*.key
+meta-key
+
+# data artifacts (large / reproducible)
+data/
+app/data/
+*.tif
+*.parquet
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# misc
+.DS_Store
+*.log

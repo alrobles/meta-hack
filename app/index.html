@@ -1,0 +1,297 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WildSeek — wildlife disease monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<style>
+  body { margin:0; font:13px system-ui, sans-serif; }
+  #map { position:absolute; inset:0; }
+  #panel { position:absolute; top:0; left:0; width:330px; max-height:100vh;
+           overflow:auto; background:#0d1117ee; color:#e6edf3; padding:12px;
+           z-index:5; }
+  #panel h1 { font-size:15px; margin:4px 0 8px; }
+  #panel h2 { font-size:12px; margin:10px 0 4px; color:#8b949e;
+              text-transform:uppercase; letter-spacing:.05em; }
+  .stat { color:#8b949e; margin:2px 0; }
+  #panel select, #panel input[type=range] { width:100%; background:#161b22;
+    color:#e6edf3; border:1px solid #30363d; padding:5px; margin:4px 0; }
+  .layer { margin:6px 0; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:6px;
+          padding:8px; margin:6px 0; }
+  .card h3 { margin:0 0 4px; font-size:13px; color:#58a6ff; }
+  .card .sub { color:#8b949e; font-size:11px; }
+  #wslist { max-height:200px; overflow:auto; }
+  .wsrow { padding:3px 4px; border-bottom:1px solid #21262d; cursor:pointer; }
+  .wsrow:hover { background:#1f242c; }
+  .wsrow b { color:#f781bf; font-weight:500; }
+  .badge { display:inline-block; background:#f7816622; color:#f78166;
+           border:1px solid #f7816655; border-radius:4px; font-size:10px;
+           padding:0 4px; margin-left:4px; }
+  button { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+           padding:5px 8px; cursor:pointer; border-radius:5px; }
+  #brief { white-space:pre-wrap; font-size:11px; }
+  details { margin:8px 0; }
+  summary { cursor:pointer; color:#8b949e; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>WildSeek — HPAI Monitor</h1>
+  <div class="stat">Ecological surveillance for wildlife professionals — not medical advice.</div>
+  <div class="stat" id="meta">loading…</div>
+
+  <div class="card">
+    <h3>Nightly briefing <span class="badge">muse-wonder</span></h3>
+    <div class="stat" id="brief">loading…</div>
+  </div>
+
+  <h2>Watershed watchlist</h2>
+  <div id="wslist" class="stat">loading…</div>
+
+  <h2>Layers</h2>
+  <div class="layer"><label><input type="checkbox" id="ckRisk" checked>
+    surveillance priority (detection × susceptibility)</label></div>
+  <div class="layer"><label><input type="checkbox" id="ckRsv">
+    reservoir community</label>
+    <select id="rsvMode" style="margin-left:16px;font-size:11px">
+      <option value="sum">expected # hosts</option>
+      <option value="prob">P(&ge;1 susceptible host)</option>
+      <option value="max">strongest host</option>
+    </select></div>
+  <div class="layer"><label><input type="checkbox" id="ckCty">
+    poultry exposure by county</label></div>
+  <div class="layer"><label><input type="checkbox" id="ckDet">
+    wild-bird HPAI detections</label>
+    <input type="range" id="detYear" min="2022" max="2026" value="2026" step="1">
+    <div class="stat" id="detYearLbl">through 2026</div></div>
+  <div class="layer"><label><input type="checkbox" id="ckFlock">
+    flock confirmations (APHIS)</label></div>
+  <div class="layer"><label><input type="checkbox" id="ckFly" checked>
+    flyways</label></div>
+
+  <div class="card" id="clickcard" style="display:none">
+    <h3 id="ccTitle"></h3>
+    <div class="sub" id="ccSub"></div>
+    <div id="ccBody" style="margin-top:4px"></div>
+  </div>
+
+  <details>
+    <summary>species drill-down (1,147 modelled)</summary>
+    <select id="spSel"><option value="">— pick species —</option></select>
+    <div class="stat" id="sel"></div>
+  </details>
+  <div class="stat" style="margin-top:8px">EcoSeek stack · public data:
+    GBIF / ERA5 / RESOLVE / USDA-APHIS / USGS WBD</div>
+</div>
+
+<script>
+const SRC = "data/";
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const map = new maplibregl.Map({
+  container: "map",
+  style: { version: 8,
+    sources: { osm: { type:"raster", tileSize:256,
+      tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution:"© OSM" }},
+    layers: [{ id:"osm", type:"raster", source:"osm" }] },
+  center: [-98, 39], zoom: 4
+});
+map.addControl(new maplibregl.NavigationControl());
+
+let META = {};
+
+async function load() {
+  META = await fetch(SRC+"meta.json").then(r=>r.json()).catch(()=>({}));
+  document.getElementById("meta").textContent =
+    `${META.n_species ?? "?"} spp modelled · ${META.n_detections ?? "?"} ` +
+    `HPAI detections · built ${META.built ?? ""}`;
+
+  // --- base layers -------------------------------------------------
+  // image sources need meta keys; without them the source URL would be
+  // "undefined" and the whole load() would die — guard each one.
+  if (META.risk_png && META.risk_bbox) {
+    map.addSource("risk", {type:"image", url: SRC+META.risk_png,
+      coordinates: META.risk_bbox});
+    map.addLayer({id:"riskFill", type:"raster", source:"risk",
+      paint:{"raster-opacity":0.7}});
+  } else document.getElementById("ckRisk").disabled = true;
+
+  map.addSource("cty", {type:"geojson", data: SRC+"county_exposure.geojson"});
+  map.addLayer({id:"ctyFill", type:"fill", source:"cty",
+    layout:{visibility:"none"},
+    paint:{"fill-color":["interpolate",["linear"],["get","exposure"],
+        0,"#fee8c8", 1,"#e34a33"],
+      "fill-opacity":0.45,
+      "fill-outline-color":"#e34a3388"}});
+
+  map.addSource("fly", {type:"geojson", data: SRC+"flyways.geojson"});
+  map.addLayer({id:"flyLine", type:"fill", source:"fly",
+    paint:{"fill-color":"#58a6ff","fill-opacity":0.10}});
+
+  map.addSource("det", {type:"geojson", data: SRC+"detections.geojson"});
+  map.addLayer({id:"detPt", type:"circle", source:"det",
+    layout:{visibility:"none"},
+    paint:{"circle-radius":2.5,"circle-color":"#f781bf",
+      "circle-opacity":0.6}});
+
+  const setRsv = mode => {
+    if (map.getLayer("rsv")) map.removeLayer("rsv");
+    if (map.getSource("rsv")) map.removeSource("rsv");
+    if (!META.suit_bbox) return;
+    map.addSource("rsv", {type:"image",
+      url: SRC+`reservoir_${mode}.png`, coordinates: META.suit_bbox});
+    map.addLayer({id:"rsv", type:"raster", source:"rsv",
+      layout:{visibility: document.getElementById("ckRsv").checked
+        ? "visible" : "none"},
+      paint:{"raster-opacity":0.65}}, "ctyFill");
+  };
+  setRsv("sum");
+  document.getElementById("rsvMode").onchange =
+    e => setRsv(e.target.value);
+
+  map.addSource("flock", {type:"geojson", data: SRC+"poultry.geojson"});
+  map.addLayer({id:"flockPt", type:"circle", source:"flock",
+    layout:{visibility:"none"},
+    paint:{"circle-radius":["interpolate",["linear"],["get","birds_affected"],
+        0,3, 100000,8, 500000,14],
+      "circle-color":"#f78166","circle-opacity":0.7,
+      "circle-stroke-color":"#fff3","circle-stroke-width":1}});
+
+  // --- watershed watchlist -----------------------------------------
+  const ws = await fetch("/risk/watershed?top=15").then(r=>r.json())
+    .catch(()=>[]);
+  const wl = document.getElementById("wslist");
+  wl.innerHTML = ws.map(w =>
+    `<div class="wsrow" data-huc="${esc(w.huc8)}">
+       <b>${(w.risk ?? 0).toFixed(3)}</b> ${esc(w.name)} <span class="sub">${esc(w.states)}</span>
+       <div class="sub">${w.n_det} detections · max ${(w.max_risk ?? 0).toFixed(2)}</div>
+     </div>`).join("") || "unavailable";
+  wl.querySelectorAll(".wsrow").forEach(el => el.onclick =
+    () => explainWatershed(el.dataset.huc));
+
+  // --- briefing -----------------------------------------------------
+  try {
+    const b = await fetch("/briefing").then(r=>r.json());
+    document.getElementById("brief").textContent =
+      (b.headline ?? "") + "\n\nHOTSPOTS\n" +
+      (b.hotspots ?? []).map(h=>"• "+h).join("\n") +
+      ((b.watchlist ?? []).length ?
+        "\n\nWATCHLIST\n"+b.watchlist.map(w=>"• "+w).join("\n") : "") +
+      "\n\n" + (b.methods_note ?? "");
+  } catch(e) { document.getElementById("brief").textContent =
+    "briefing unavailable"; }
+
+  // --- species drill-down -------------------------------------------
+  const sel = document.getElementById("spSel");
+  const sp = await fetch("/species?limit=1200").then(r=>r.json()).catch(()=>[]);
+  (Array.isArray(sp) ? sp : []).forEach(r => {
+    const o = document.createElement("option");
+    o.value = r.specieskey;
+    o.textContent = r.species + (r.review ? " ⚠" : "");
+    sel.appendChild(o);
+  });
+  sel.onchange = () => {
+    if (map.getLayer("suit")) map.removeLayer("suit");
+    if (map.getSource("suit")) map.removeSource("suit");
+    const row = (Array.isArray(sp)?sp:[]).find(r=>r.specieskey==sel.value);
+    document.getElementById("sel").innerHTML = row ?
+      `${esc(row.species)} · ${esc(row.best_temp)}×${esc(row.best_prec)}` +
+      (row.p_host != null ? ` · <b>P(host)=${row.p_host.toFixed(2)}</b>` +
+       (row.p05 != null ? ` [${row.p05.toFixed(2)}–${row.p95.toFixed(2)}]` : "")
+       : "") +
+      (row.host_label ? ' <span class="badge">known host</span>' : "") +
+      (row.review ? ' <span class="badge">flag_review</span>' : "") : "";
+    if (sel.value && META.suit_bbox) {
+      map.addSource("suit", {type:"image",
+        url: SRC+`suit_${sel.value}.png`, coordinates: META.suit_bbox});
+      map.addLayer({id:"suit", type:"raster", source:"suit",
+        paint:{"raster-opacity":0.65}}, "ctyFill");
+    }
+  };
+
+  // --- toggles -------------------------------------------------------
+  const vis = (id, ck) =>
+    document.getElementById(ck).onchange = e => {
+      if (map.getLayer(id))
+        map.setLayoutProperty(id, "visibility",
+          e.target.checked ? "visible" : "none");
+    };
+  vis("riskFill","ckRisk"); vis("ctyFill","ckCty"); vis("rsv","ckRsv");
+  vis("detPt","ckDet");  vis("flockPt","ckFlock"); vis("flyLine","ckFly");
+
+  // detection time filter
+  document.getElementById("detYear").oninput = e => {
+    const y = e.target.value;
+    document.getElementById("detYearLbl").textContent = `through ${y}`;
+    if (map.getLayer("detPt"))
+      map.setFilter("detPt",
+        ["<=", ["get","year"], ["to-number", y]]);
+  };
+
+  // --- click → watershed/county card ---------------------------------
+  map.on("click", async e => {
+    const card = document.getElementById("clickcard");
+    const det = map.queryRenderedFeatures(e.point,
+      {layers:["detPt"]})[0];
+    if (det) {
+      const p = det.properties;
+      card.style.display = "block";
+      document.getElementById("ccTitle").textContent =
+        p.species ? `HPAI+ ${p.species}` : "HPAI+ detection";
+      document.getElementById("ccSub").textContent =
+        `${p.county}, ${p.state} · ${String(p.date).slice(0,10)}` +
+        (p.strain ? ` · ${p.strain}` : "");
+      document.getElementById("ccBody").textContent =
+        "confirmed HPAI detection (NWHC/APHIS)";
+      return;
+    }
+    const feat = map.queryRenderedFeatures(e.point,
+      {layers:["ctyFill"]})[0];
+    if (feat) {
+      const p = feat.properties;
+      card.style.display = "block";
+      document.getElementById("ccTitle").textContent =
+        `${p.name} Co., ${p.state}`;
+      document.getElementById("ccSub").textContent =
+        `county exposure ${p.exposure}`;
+      document.getElementById("ccBody").textContent =
+        `mean risk ${p.mean_risk} · ${p.events} flock confirmations · ` +
+        `${Number(p.birds_affected).toLocaleString()} birds affected`;
+      return;
+    }
+    card.style.display = "none";
+  });
+}
+
+async function explainWatershed(huc) {
+  const card = document.getElementById("clickcard");
+  card.style.display = "block";
+  document.getElementById("ccTitle").textContent = "loading…";
+  try {
+    const e = await fetch(`/explain/watershed/${huc}`).then(r=>r.json());
+    const b = e.brief || {};
+    document.getElementById("ccTitle").textContent =
+      b.headline || `watershed ${huc}`;
+    document.getElementById("ccSub").textContent =
+      b.risk_level ? `priority: ${b.risk_level}` : "";
+    document.getElementById("ccBody").innerHTML =
+      (b.drivers || []).map(d=>"• "+esc(d)).join("<br>") +
+      (b.sampling_rec ? `<br><br>${esc(b.sampling_rec)}` : "");
+  } catch(err) {
+    document.getElementById("ccTitle").textContent = "explain unavailable";
+  }
+}
+map.on("load", load);
+</script>
+<footer style="position:fixed;bottom:0;left:0;right:0;padding:4px 10px;
+ font:11px/1.4 sans-serif;color:#888;background:#ffffffee;z-index:1000;
+ text-align:center">WildSeek is an ecological surveillance research tool
+ for wildlife professionals. Not medical advice, not for personal health
+ decisions.</footer>
+</body>
+</html>

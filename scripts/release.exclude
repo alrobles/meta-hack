@@ -1,0 +1,16 @@
+# Paths stripped from the curated public snapshot (one pathspec per line).
+# Internal ops docs — cluster users/paths, deploy procedure, review output.
+docs/HANDOFF.md
+docs/muse-reviews
+docs/morning-status.md
+docs/night-run.md
+docs/system-escalation.md
+docs/ai-factory.md
+docs/devin-brief-wildseek.md
+docs/repo-inventory.md
+docs/hackathon-alignment.md
+docs/progress-report.md
+agent/dev_mercury.py
+docs/plan.md
+docs/prompts/devin-hermes-muse.md
+docs/hackathon-rules.md
